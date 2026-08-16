@@ -1,11 +1,18 @@
 # syntax=docker/dockerfile:1.7
 
-# Every cache mount below carries an explicit id. Standard BuildKit keys an
-# anonymous cache by its target, so the ids change nothing locally -- the
-# three uv mounts still share one cache, exactly as before. Railway's Metal
-# builder, though, rejects a cache mount with no id outright ("flag
-# '--mount=type=cache,target=...' is missing an id argument") and fails the
-# build before it starts. Keep the ids on any mount added here.
+# The BuildKit cache mounts upstream uses on the uv and npm install steps are
+# removed on this branch. Railway's Metal builder will not accept them: an
+# id-less mount is rejected outright, and an id is only accepted in the form
+# id=s/<service id>-<target>, with the service id written out literally --
+# variables and build args are explicitly unsupported, so there is no way to
+# express it that stays portable. Hardcoding one deployment's service id into
+# a Dockerfile in the repo is worse than losing the cache.
+#
+# The cost is build time only, on a repo that is deployed rarely: every build
+# re-downloads the Python and npm dependencies. Nothing about the resulting
+# image changes. If builds ever get slow enough to matter, add the mounts back
+# with this service's own id rather than reintroducing a portable-looking form
+# that this builder rejects.
 
 FROM python:3.11-slim-trixie AS fastapi-builder
 
@@ -18,17 +25,14 @@ RUN python -m venv --without-pip /opt/venv \
     && pip install --no-cache-dir uv
 
 COPY servers/fastapi/pyproject.toml servers/fastapi/uv.lock ./
-RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
-    uv export --frozen --no-dev --no-emit-project -o /tmp/requirements.txt \
+RUN uv export --frozen --no-dev --no-emit-project -o /tmp/requirements.txt \
     && uv pip install --python /opt/venv/bin/python -r /tmp/requirements.txt
 
 COPY servers/fastapi /app/servers/fastapi
-RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
-    uv pip install --python /opt/venv/bin/python --no-deps .
+RUN uv pip install --python /opt/venv/bin/python --no-deps .
 # mem0/spaCy BM25 lemmatization loads en_core_web_sm at runtime; spaCy tries pip to
 # download it otherwise. Runtime image has no pip in PATH (--without-pip venv).
-RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
-    uv pip install --python /opt/venv/bin/python \
+RUN uv pip install --python /opt/venv/bin/python \
     "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
 ENV HF_HOME=/root/.cache/huggingface \
     PRESENTON_FASTEMBED_ICON_CACHE_DIR=/root/.cache/presenton/fastembed-icons
@@ -43,8 +47,7 @@ WORKDIR /app/servers/nextjs
 ENV NEXT_TELEMETRY_DISABLED=1
 
 COPY servers/nextjs/package.json servers/nextjs/package-lock.json ./
-RUN --mount=type=cache,id=npm-cache,target=/root/.npm \
-    npm ci
+RUN npm ci
 
 COPY servers/nextjs /app/servers/nextjs
 RUN npm run build \
