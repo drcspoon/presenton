@@ -1,5 +1,12 @@
 # syntax=docker/dockerfile:1.7
 
+# Every cache mount below carries an explicit id. Standard BuildKit keys an
+# anonymous cache by its target, so the ids change nothing locally -- the
+# three uv mounts still share one cache, exactly as before. Railway's Metal
+# builder, though, rejects a cache mount with no id outright ("flag
+# '--mount=type=cache,target=...' is missing an id argument") and fails the
+# build before it starts. Keep the ids on any mount added here.
+
 FROM python:3.11-slim-trixie AS fastapi-builder
 
 WORKDIR /app/servers/fastapi
@@ -11,16 +18,16 @@ RUN python -m venv --without-pip /opt/venv \
     && pip install --no-cache-dir uv
 
 COPY servers/fastapi/pyproject.toml servers/fastapi/uv.lock ./
-RUN --mount=type=cache,target=/root/.cache/uv \
+RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
     uv export --frozen --no-dev --no-emit-project -o /tmp/requirements.txt \
     && uv pip install --python /opt/venv/bin/python -r /tmp/requirements.txt
 
 COPY servers/fastapi /app/servers/fastapi
-RUN --mount=type=cache,target=/root/.cache/uv \
+RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
     uv pip install --python /opt/venv/bin/python --no-deps .
 # mem0/spaCy BM25 lemmatization loads en_core_web_sm at runtime; spaCy tries pip to
 # download it otherwise. Runtime image has no pip in PATH (--without-pip venv).
-RUN --mount=type=cache,target=/root/.cache/uv \
+RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
     uv pip install --python /opt/venv/bin/python \
     "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
 ENV HF_HOME=/root/.cache/huggingface \
@@ -36,7 +43,7 @@ WORKDIR /app/servers/nextjs
 ENV NEXT_TELEMETRY_DISABLED=1
 
 COPY servers/nextjs/package.json servers/nextjs/package-lock.json ./
-RUN --mount=type=cache,target=/root/.npm \
+RUN --mount=type=cache,id=npm-cache,target=/root/.npm \
     npm ci
 
 COPY servers/nextjs /app/servers/nextjs
